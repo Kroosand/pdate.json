@@ -65,13 +65,12 @@ def get_wisphub_config():
     password = os.getenv('BRAZIL_DB_PASS')
     
     config = {
-        'wisphub_api_url': 'https://sandbox-api.wisphub.net/api',
-        'wisphub_api_key': 'OyXJwBZB.P2nfJO1Zc8oLYmFMdR8Q4zXQx8KtFpE3'
+        'wisphub_api_url': '',
+        'wisphub_api_key': ''
     }
     
     if not all([host, user, password]):
-        print("Warning: Brazil DB environment variables are not set. Using local Sandbox defaults.")
-        return config
+        raise ValueError("Error: WispHub credentials are not set in environment variables and Brazil DB connection details are missing.")
         
     try:
         conn_str = f"host={host} port={port} dbname={database} user={user} password={password} sslmode=require"
@@ -84,7 +83,10 @@ def get_wisphub_config():
         conn.close()
         print("Loaded WispHub config from Brazil DB.")
     except Exception as e:
-        print("Error loading config from Brazil DB, using sandbox defaults. Detail:", e)
+        print("Error loading config from Brazil DB. Detail:", e)
+        
+    if not config['wisphub_api_url'] or not config['wisphub_api_key']:
+        raise ValueError("Error: Could not resolve WispHub URL or API Key.")
         
     return config
 
