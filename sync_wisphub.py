@@ -245,7 +245,9 @@ def run_sync():
             
         telefono_raw = c.get('telefono') or ""
         telefono_clean = clean_and_format_phones(telefono_raw)
-        phones_list = [p.strip() for p in telefono_clean.split(',') if p.strip()]
+        if not telefono_clean:
+            telefono_clean = None
+        phones_list = [p.strip() for p in telefono_clean.split(',') if p.strip()] if telefono_clean else []
         
         # Check if service already exists
         existing_srv = existing_srv_by_ident.get(identificador_sistema)
