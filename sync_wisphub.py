@@ -246,8 +246,13 @@ def run_sync():
         telefono_raw = c.get('telefono') or ""
         telefono_clean = clean_and_format_phones(telefono_raw)
         if not telefono_clean:
-            telefono_clean = None
-        phones_list = [p.strip() for p in telefono_clean.split(',') if p.strip()] if telefono_clean else []
+            # Skip clients/services without a phone number because:
+            # 1. The database enforces a NOT NULL constraint on "telefono".
+            # 2. A WhatsApp bot cannot interact with clients who don't have a phone number.
+            print(f"Skipping service {id_servicio} ({nombre_completo}) - No phone number.")
+            continue
+            
+        phones_list = [p.strip() for p in telefono_clean.split(',') if p.strip()]
         
         # Check if service already exists
         existing_srv = existing_srv_by_ident.get(identificador_sistema)
