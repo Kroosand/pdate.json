@@ -232,9 +232,11 @@ def run_sync():
         if not id_servicio:
             continue
             
+        identificador_sistema = f"INT-{id_servicio}"
         nombre_completo = c.get('nombre') or ""
-        # Clean trailing service indicators like "Juan Perez 1", "Juan Perez 2", etc.
+        # Limpiar números de contrato al final del nombre como "Juan Pérez 1", "Juan Pérez 2", "Juan Pérez - 3"
         nombre_completo = re.sub(r'\s+[-–]?\s*\d+$', '', nombre_completo).strip()
+        
         dni_ruc = c.get('cedula')
         if dni_ruc:
             dni_ruc = str(dni_ruc).strip()
