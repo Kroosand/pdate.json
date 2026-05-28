@@ -6,7 +6,7 @@ import json
 import requests
 import psycopg2
 
-# Intenta cargar un archivo local .env si existe (solo para pruebas locales)
+# Try to load local .env file if it exists (for local debugging/testing)
 if os.path.exists('.env'):
     with open('.env') as f:
         for line in f:
@@ -21,9 +21,9 @@ if os.path.exists('.env'):
 def clean_and_format_phones(phone_str):
     if not phone_str:
         return ""
-    # Remover todo lo que no sea dígito
+    # Remove all non-digits
     digits_only = re.sub(r'\D', '', phone_str)
-    # Buscar secuencias de 9 dígitos que comiencen con 9 (estándar de celular en Perú)
+    # Find all 9-digit sequences starting with 9 (Peru cell phone standard)
     matches = re.findall(r'9\d{8}', digits_only)
     
     formatted = []
@@ -47,7 +47,7 @@ def parse_dia_corte(fecha_corte_str):
     return 7
 
 def get_wisphub_config():
-    # 1. Primero, verifica si las credenciales de WispHub se proporcionan directamente en las variables de entorno (Recomendado)
+    # 1. First, check if WispHub credentials are provided directly in the environment variables (best practice)
     env_url = os.getenv('WISPHUB_API_URL')
     env_key = os.getenv('WISPHUB_API_KEY')
     if env_url and env_key:
@@ -57,7 +57,7 @@ def get_wisphub_config():
             'wisphub_api_key': env_key
         }
         
-    # 2. Respaldo: Intenta cargar las credenciales desde la base de datos de Brasil
+    # 2. Fallback: Try to load credentials from the Brazil DB using connection variables
     host = os.getenv('BRAZIL_DB_HOST')
     port = os.getenv('BRAZIL_DB_PORT', '6543')
     database = os.getenv('BRAZIL_DB_NAME', 'postgres')
@@ -111,7 +111,7 @@ def fetch_wisphub_clients(api_url, api_key):
             clients.extend(results)
             url = data.get('next')
             if url:
-                time.sleep(0.5)  # Pausa de seguridad
+                time.sleep(0.5)  # 0.5s pause to prevent API rate limiting
         except Exception as e:
             print("Exception during WispHub clients fetch:", e)
             break
@@ -140,7 +140,7 @@ def fetch_wisphub_unpaid_invoices(api_url, api_key):
             invoices.extend(results)
             url = data.get('next')
             if url:
-                time.sleep(0.5)
+                time.sleep(0.5)  # 0.5s pause to prevent API rate limiting
         except Exception as e:
             print("Exception during WispHub invoices fetch:", e)
             break
@@ -151,16 +151,16 @@ def fetch_wisphub_unpaid_invoices(api_url, api_key):
 def run_sync():
     print("--- STARTING WISPHUB DATABASE SYNC ---")
     
-    # 1. Obtener configuraciones
+    # 1. Get configurations
     config = get_wisphub_config()
     api_url = config['wisphub_api_url']
     api_key = config['wisphub_api_key']
     
-    # 2. Obtener datos de WispHub
+    # 2. Fetch data from WispHub
     wh_clients = fetch_wisphub_clients(api_url, api_key)
     wh_invoices = fetch_wisphub_unpaid_invoices(api_url, api_key)
     
-    # 3. Agrupar facturas pendientes por id_servicio
+    # 3. Group unpaid invoices by id_servicio
     invoices_by_service = {}
     for inv in wh_invoices:
         articulos = inv.get('articulos', [])
@@ -170,7 +170,7 @@ def run_sync():
                 srv_id = srv['id_servicio']
                 invoices_by_service.setdefault(srv_id, []).append(inv)
                 
-    # 4. Conectar a USA Supabase DB REST API (usando variables de entorno)
+    # 4. Connect to USA Supabase DB REST API (using environment variables)
     url_usa = os.getenv('USA_SUPABASE_URL')
     supabase_key = os.getenv('USA_SUPABASE_KEY')
     
@@ -184,7 +184,7 @@ def run_sync():
         "Content-Type": "application/json"
     }
     
-    # 5. Obtener clientes y servicios existentes para hacer matching en memoria
+    # 5. Fetch existing clients and services to run matching in-memory
     print("Fetching existing clients from Supabase USA...")
     r_cli = requests.get(url_usa + "clientes", headers=headers_usa)
     if r_cli.status_code != 200:
@@ -199,9 +199,24 @@ def run_sync():
         return
     existing_services = r_srv.json()
     
+    # Maps
     existing_cli_by_id = {c['id']: c for c in existing_clients}
     existing_cli_by_dni = {c['dni_ruc']: c for c in existing_clients if c['dni_ruc']}
     existing_srv_by_ident = {s['identificador_sistema']: s for s in existing_services}
+    
+    # Map phone numbers of existing clients to their records to match by phone number
+    existing_cli_by_phone = {}
+    for c in existing_clients:
+        if c.get('telefono'):
+            for ph in c['telefono'].split(','):
+                ph = ph.strip()
+                if ph:
+                    existing_cli_by_phone[ph] = c
+                    
+    # Track items we have processed in this batch to reuse client IDs and prevent duplicates
+    batch_cli_by_dni = {}
+    batch_cli_by_phone = {}
+    processed_client_ids = set()
     
     clients_payload = []
     services_payload = []
@@ -211,16 +226,15 @@ def run_sync():
     new_services_count = 0
     updated_services_count = 0
     
-    processed_client_ids = set()
-    
-    # 6. Procesar cada cliente de WispHub
+    # 6. Process each WispHub client
     for c in wh_clients:
         id_servicio = c.get('id_servicio')
         if not id_servicio:
             continue
             
-        identificador_sistema = f"INT-{id_servicio}"
         nombre_completo = c.get('nombre') or ""
+        # Clean trailing service indicators like "Juan Perez 1", "Juan Perez 2", etc.
+        nombre_completo = re.sub(r'\s+[-–]?\s*\d+$', '', nombre_completo).strip()
         dni_ruc = c.get('cedula')
         if dni_ruc:
             dni_ruc = str(dni_ruc).strip()
@@ -229,34 +243,76 @@ def run_sync():
             
         telefono_raw = c.get('telefono') or ""
         telefono_clean = clean_and_format_phones(telefono_raw)
+        phones_list = [p.strip() for p in telefono_clean.split(',') if p.strip()]
         
-        # Verificar si el servicio ya existe
+        # Check if service already exists
         existing_srv = existing_srv_by_ident.get(identificador_sistema)
         
         client_id = None
-        bot_activo = True  # Valor predeterminado para nuevos
+        bot_activo = True  # Default for new clients
         
         if existing_srv:
+            # Service exists -> link to its existing client ID
             client_id = existing_srv['cliente_id']
+            # Fetch existing client to preserve bot_activo state
             existing_cli = existing_cli_by_id.get(client_id)
             if existing_cli:
                 bot_activo = existing_cli.get('bot_activo', True)
             updated_services_count += 1
         else:
+            # Service does not exist -> check if client already exists (by DNI or Phone)
             existing_cli = None
-            if dni_ruc:
-                existing_cli = existing_cli_by_dni.get(dni_ruc)
+            
+            # A. Match by DNI in database
+            if dni_ruc and dni_ruc in existing_cli_by_dni:
+                existing_cli = existing_cli_by_dni[dni_ruc]
                 
+            # B. Match by DNI in current batch
+            elif dni_ruc and dni_ruc in batch_cli_by_dni:
+                client_id = batch_cli_by_dni[dni_ruc]
+                for p_cli in clients_payload:
+                    if p_cli['id'] == client_id:
+                        bot_activo = p_cli['bot_activo']
+                        break
+                        
+            # C. Match by Phone in database
+            if not existing_cli and not client_id:
+                for ph in phones_list:
+                    if ph in existing_cli_by_phone:
+                        existing_cli = existing_cli_by_phone[ph]
+                        break
+                        
+            # D. Match by Phone in current batch
+            if not existing_cli and not client_id:
+                for ph in phones_list:
+                    if ph in batch_cli_by_phone:
+                        client_id = batch_cli_by_phone[ph]
+                        for p_cli in clients_payload:
+                            if p_cli['id'] == client_id:
+                                bot_activo = p_cli['bot_activo']
+                                break
+                        break
+            
+            # Resolve ID and counters
             if existing_cli:
                 client_id = existing_cli['id']
                 bot_activo = existing_cli.get('bot_activo', True)
                 updated_clients_count += 1
-            else:
+            elif not client_id:
                 client_id = str(uuid.uuid4())
                 new_clients_count += 1
+            else:
+                updated_clients_count += 1
                 
             new_services_count += 1
             
+        # Register in batch maps to prevent duplicates in future iterations of this loop
+        if dni_ruc:
+            batch_cli_by_dni[dni_ruc] = client_id
+        for ph in phones_list:
+            batch_cli_by_phone[ph] = client_id
+            
+        # Create client payload row if not already added in this sync batch
         if client_id not in processed_client_ids:
             processed_client_ids.add(client_id)
             clients_payload.append({
@@ -266,8 +322,19 @@ def run_sync():
                 "telefono": telefono_clean,
                 "bot_activo": bot_activo
             })
+        else:
+            # Merge any new phone numbers from other services of the same client
+            for p_cli in clients_payload:
+                if p_cli['id'] == client_id:
+                    existing_phones = [p.strip() for p in (p_cli['telefono'] or '').split(',') if p.strip()]
+                    new_phones = [p for p in phones_list if p not in existing_phones]
+                    if new_phones:
+                        combined_phones = existing_phones + new_phones
+                        p_cli['telefono'] = ",".join(combined_phones)
+                    break
             
-        # Calcular deudas
+        # Determine payment details
+        # If there are unpaid invoices, sum their total to establish exact debt
         service_invoices = invoices_by_service.get(id_servicio, [])
         if service_invoices:
             total_debt = sum(float(inv.get('total') or 0.0) for inv in service_invoices)
@@ -279,9 +346,11 @@ def run_sync():
             
         dia_corte = parse_dia_corte(c.get('fecha_corte'))
         
+        # Estado servicio: normalize Activo -> ACTIVO, other -> SUSPENDIDO
         wh_estado = str(c.get('estado') or '').upper()
         estado_servicio = "ACTIVO" if wh_estado == "ACTIVO" else "SUSPENDIDO"
         
+        # Prepare service fields preserving metadata if existing
         srv_id = existing_srv['id'] if existing_srv else str(uuid.uuid4())
         abono = float(existing_srv.get('abono') or 0.0) if existing_srv else 0.0
         intentos = existing_srv.get('intentos_activacion') if existing_srv else None
@@ -289,8 +358,8 @@ def run_sync():
         services_payload.append({
             "id": srv_id,
             "cliente_id": client_id,
-            "categoria": "INTERNET",
-            "identificador_sistema": identificador_sistema,
+            "categoria": "INTERNET",  # Forced INTERNET for WispHub
+            "identificador_sistema": identificador_sistema,  # Forced INT- prefix
             "monto_mensual": monto_mensual,
             "dia_corte": dia_corte,
             "estado_servicio": estado_servicio,
@@ -299,7 +368,7 @@ def run_sync():
             "intentos_activacion": intentos
         })
         
-    # 7. Ejecutar Upserts en Supabase
+    # 7. Upsert data to Supabase
     if clients_payload:
         print(f"Upserting {len(clients_payload)} clients to Supabase USA...")
         headers_upsert = headers_usa.copy()
@@ -315,17 +384,19 @@ def run_sync():
             code = detail_msg.get('code') if isinstance(detail_msg, dict) else None
             msg_str = str(detail_msg)
             
-            # Control de error VARCHAR(20)
+            # Check for VARCHAR(20) overflow error: code "22001" or message contents
             if code == '22001' or 'character varying(20)' in msg_str or 'too long' in msg_str:
-                print("\n[WARNING] The 'telefono' column in Supabase 'clientes' table is restricted to 20 characters.")
-                print("To support multiple numbers, please run the following SQL command in your Supabase dashboard:")
+                print("\n[WARNING] The 'telefono' column in Supabase 'clientes' table is restricted to 20 characters (VARCHAR(20)).")
+                print("Multiple numbers cannot be stored. To support multiple numbers, please run the following SQL command in your Supabase dashboard:")
                 print("  ALTER TABLE public.clientes ALTER COLUMN telefono TYPE VARCHAR(100);\n")
-                print("Retrying client sync by keeping only the first phone number...")
+                print("Retrying client sync by keeping only the first phone number for each client to prevent failures...")
                 
+                # Truncate telefono field in payload to the first number only
                 for cli in clients_payload:
                     if cli['telefono']:
                         cli['telefono'] = cli['telefono'].split(',')[0]
                 
+                # Retry upsert
                 r_up_cli = requests.post(url_usa + "clientes", json=clients_payload, headers=headers_upsert)
                 if r_up_cli.status_code not in (200, 201):
                     print(f"Retry failed: Status {r_up_cli.status_code}, Detail: {r_up_cli.text}")
@@ -348,6 +419,7 @@ def run_sync():
     print("\n--- SYNC COMPLETED SUCCESSFULLY ---")
     print(f"Clients: {new_clients_count} created, {updated_clients_count} updated.")
     print(f"Services: {new_services_count} created, {updated_services_count} updated.")
+    print(f"Total rows processed: {len(clients_payload)} clients and {len(services_payload)} services.")
 
 if __name__ == '__main__':
     run_sync()
