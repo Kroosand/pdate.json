@@ -221,7 +221,12 @@ def run_sync():
             
         identificador_sistema = f"INT-{id_servicio}"
         nombre_completo = c.get('nombre') or ""
-        dni_ruc = c.get('cedula') or ""
+        dni_ruc = c.get('cedula')
+        if dni_ruc:
+            dni_ruc = str(dni_ruc).strip()
+        if not dni_ruc:
+            dni_ruc = None
+            
         telefono_raw = c.get('telefono') or ""
         telefono_clean = clean_and_format_phones(telefono_raw)
         
