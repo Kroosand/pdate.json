@@ -148,6 +148,24 @@ def fetch_wisphub_unpaid_invoices(api_url, api_key):
     print(f"Total unpaid WispHub invoices fetched: {len(invoices)}")
     return invoices
 
+def fetch_all_from_supabase(url_base, table, headers):
+    """Paginates the Supabase REST API queries using limit and offset to bypass the 1000 row cap."""
+    items = []
+    limit = 1000
+    offset = 0
+    while True:
+        url = f"{url_base.rstrip('/')}/{table}?limit={limit}&offset={offset}"
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            print(f"Error fetching {table} from Supabase: {r.status_code}, {r.text}")
+            raise Exception(f"Failed to fetch {table} from Supabase")
+        data = r.json()
+        items.extend(data)
+        if len(data) < limit:
+            break
+        offset += limit
+    return items
+
 def run_sync():
     print("--- STARTING WISPHUB DATABASE SYNC ---")
     
@@ -184,20 +202,16 @@ def run_sync():
         "Content-Type": "application/json"
     }
     
-    # 5. Fetch existing clients and services to run matching in-memory
-    print("Fetching existing clients from Supabase USA...")
-    r_cli = requests.get(url_usa + "clientes", headers=headers_usa)
-    if r_cli.status_code != 200:
-        print(f"Error fetching existing clients from Supabase: {r_cli.text}")
+    # 5. Fetch existing clients and services to run matching in-memory (paginated)
+    try:
+        print("Fetching existing clients from Supabase USA (paginated)...")
+        existing_clients = fetch_all_from_supabase(url_usa, "clientes", headers_usa)
+        
+        print("Fetching existing services from Supabase USA (paginated)...")
+        existing_services = fetch_all_from_supabase(url_usa, "servicios", headers_usa)
+    except Exception as e:
+        print(f"Abort sync due to fetch error: {e}")
         return
-    existing_clients = r_cli.json()
-    
-    print("Fetching existing services from Supabase USA...")
-    r_srv = requests.get(url_usa + "servicios", headers=headers_usa)
-    if r_srv.status_code != 200:
-        print(f"Error fetching existing services from Supabase: {r_srv.text}")
-        return
-    existing_services = r_srv.json()
     
     # Maps
     existing_cli_by_id = {c['id']: c for c in existing_clients}
