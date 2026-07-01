@@ -257,19 +257,25 @@ def run_sync():
     existing_cli_by_dni = {c['dni_ruc']: c for c in existing_clients if c['dni_ruc']}
     existing_srv_by_ident = {s['identificador_sistema']: s for s in existing_services}
     
-    # Map Name + Phone combinations to existing clients to match safely
+    # Map Name + Phone combinations AND exact Phones to existing clients
     existing_cli_by_name_phone = {}
+    existing_cli_by_phone = {} # --- MEJORA: Diccionario para búsqueda estricta por teléfono
     for c in existing_clients:
+        if c.get('telefono'):
+            existing_cli_by_phone[c['telefono']] = c # Guardamos teléfono exacto
+            
         name_norm = normalize_name(c.get('nombre_completo'))
         if c.get('telefono'):
             for ph in c['telefono'].split(','):
                 ph = ph.strip()
                 if ph:
                     existing_cli_by_name_phone[(name_norm, ph)] = c
+                    existing_cli_by_phone[ph] = c # Guardamos teléfono individual
                     
     # Track items we have processed in this batch to reuse client IDs and prevent duplicates
     batch_cli_by_dni = {}
     batch_cli_by_name_phone = {}
+    batch_cli_by_phone = {} # --- MEJORA: Rastreo interno por teléfono
     processed_client_ids = set()
     
     clients_payload = []
@@ -365,6 +371,33 @@ def run_sync():
                                 bot_activo = p_cli['bot_activo']
                                 break
                         break
+
+            # --- MEJORA: E. Match by Phone ONLY en Base de Datos ---
+            # Soluciona el error 409 forzando la reutilización del ID si el teléfono ya existe
+            if not existing_cli and not client_id:
+                if telefono_clean in existing_cli_by_phone:
+                    existing_cli = existing_cli_by_phone[telefono_clean]
+                else:
+                    for ph in phones_list:
+                        if ph in existing_cli_by_phone:
+                            existing_cli = existing_cli_by_phone[ph]
+                            break
+                            
+            # --- MEJORA: F. Match by Phone ONLY en el Lote Actual ---
+            if not existing_cli and not client_id:
+                if telefono_clean in batch_cli_by_phone:
+                    client_id = batch_cli_by_phone[telefono_clean]
+                else:
+                    for ph in phones_list:
+                        if ph in batch_cli_by_phone:
+                            client_id = batch_cli_by_phone[ph]
+                            break
+                # Si encontramos el ID, recuperamos el estado del bot
+                if client_id:
+                    for p_cli in clients_payload:
+                        if p_cli['id'] == client_id:
+                            bot_activo = p_cli['bot_activo']
+                            break
             
             # Resolve ID and counters
             if existing_cli:
@@ -383,8 +416,12 @@ def run_sync():
         if dni_ruc:
             batch_cli_by_dni[dni_ruc] = client_id
         name_norm = normalize_name(nombre_completo)
+        
+        batch_cli_by_phone[telefono_clean] = client_id # --- MEJORA: Registrar teléfono exacto
+        
         for ph in phones_list:
             batch_cli_by_name_phone[(name_norm, ph)] = client_id
+            batch_cli_by_phone[ph] = client_id # --- MEJORA: Registrar teléfono individual
             
         # Create client payload row if not already added in this sync batch
         if client_id not in processed_client_ids:
