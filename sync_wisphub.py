@@ -424,12 +424,9 @@ def run_sync():
                 "nombre_completo": nombre_completo,
                 "dni_ruc": dni_ruc,
                 "telefono": telefono_clean,
-                "bot_activo": bot_activo,
-                "direccion": direccion_clean,
-                "id_wisphub": str(id_servicio),
-                "lat": wh_lat,
-                "lng": wh_lng
+                "bot_activo": bot_activo
             })
+
         else:
             # Merge any new phone numbers from other services of the same client
             for p_cli in clients_payload:
@@ -483,26 +480,32 @@ def run_sync():
         headers_upsert["Prefer"] = "resolution=merge-duplicates"
         r_up_cli = requests.post(url_usa + "clientes", json=clients_payload, headers=headers_upsert)
         
-        if r_up_cli.status_code == 400 and ('PGRST204' in r_up_cli.text or 'column' in r_up_cli.text.lower()):
-            print("[INFO] Target database schema does not support some columns. Cleaning payload and retrying...")
+        # Bucle de seguridad para limpieza dinámica (Corrección preservada)
+        max_retries = 4
+        retries = 0
+        
+        while r_up_cli.status_code == 400 and ('pgrst204' in r_up_cli.text.lower() or 'column' in r_up_cli.text.lower()) and retries < max_retries:
             msg = r_up_cli.text.lower()
-            unsupported_cols = []
-            if 'direccion' in msg:
-                unsupported_cols.append('direccion')
-            if 'id_wisphub' in msg:
-                unsupported_cols.append('id_wisphub')
-            if 'lat' in msg:
-                unsupported_cols.append('lat')
-            if 'lng' in msg:
-                unsupported_cols.append('lng')
-            if not unsupported_cols:
+            print(f"[INFO] La base de datos no soporta una columna. Limpiando payload y reintentando (Intento {retries + 1})...")
+            
+            col_to_remove = None
+            if 'direccion' in msg: col_to_remove = 'direccion'
+            elif 'id_wisphub' in msg: col_to_remove = 'id_wisphub'
+            elif 'lat' in msg: col_to_remove = 'lat'
+            elif 'lng' in msg: col_to_remove = 'lng'
+            else:
+                col_to_remove = 'todas'
                 unsupported_cols = ['direccion', 'id_wisphub', 'lat', 'lng']
-                
-            for cli in clients_payload:
-                for col in unsupported_cols:
-                    cli.pop(col, None)
+                for cli in clients_payload:
+                    for col in unsupported_cols:
+                        cli.pop(col, None)
+
+            if col_to_remove and col_to_remove != 'todas':
+                for cli in clients_payload:
+                    cli.pop(col_to_remove, None)
             
             r_up_cli = requests.post(url_usa + "clientes", json=clients_payload, headers=headers_upsert)
+            retries += 1
         
         if r_up_cli.status_code not in (200, 201):
             try:
