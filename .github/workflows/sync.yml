@@ -2,7 +2,7 @@ name: Sync WispHub to Supabase
 
 on:
   schedule:
-    - cron: '0 10 1 * *'  # Ejecuta el primer día de cada mes a las 10:00 UTC (5:00 AM hora de Perú/Arequipa)
+    - cron: '17 10 1 * *'  # Ejecuta el primer día de cada mes a las 10:00 UTC (5:00 AM hora de Perú/Arequipa)
   workflow_dispatch:      # Permite ejecutarlo manualmente desde GitHub Actions
 
 jobs:
