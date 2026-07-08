@@ -1,0 +1,31 @@
+name: Sync WispHub to Brasil ERP
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Runs every 15 minutes for near real-time updates
+  workflow_dispatch:       # Allows manual triggers from the GitHub actions tab
+
+jobs:
+  sync-brasil:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pg8000
+
+    - name: Run sync script
+      env:
+        BRASIL_DB_HOST: ${{ secrets.BRASIL_DB_HOST }}
+        BRASIL_DB_USER: ${{ secrets.BRASIL_DB_USER }}
+        BRASIL_DB_PASS: ${{ secrets.BRASIL_DB_PASS }}
+      run: python sync_wisphub_to_erp.py --incremental
