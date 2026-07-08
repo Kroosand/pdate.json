@@ -316,13 +316,33 @@ def run_sync(dry_run=False, incremental=False):
     
     stats_ot = {'inserted': 0, 'updated': 0, 'skipped': 0}
     
-    # Fetch existing OTs
-    cur.execute("SELECT id_ot, id_cliente, estado, descripcion FROM public.ordenes_trabajo")
+    # Fetch existing OTs and build memory indexes
+    cur.execute("SELECT id_ot, id_cliente, estado, id_wisphub, descripcion FROM public.ordenes_trabajo")
     existing_ots_rows = cur.fetchall()
-    existing_ots = {str(r[0]): r for r in existing_ots_rows}
+    
+    existing_ots_by_wh = {}
+    for r in existing_ots_rows:
+        ot_id, id_cli, est, id_wh, desc = r
+        if id_wh:
+            existing_ots_by_wh[str(id_wh).strip()] = r
+            
+    # Calculate next sequence number for OT format: OT-YYYY-N
+    year = datetime.now().year
+    max_seq = 0
+    for r in existing_ots_rows:
+        ot_id = str(r[0])
+        parts = ot_id.split('-')
+        if len(parts) == 3 and parts[0] == 'OT' and parts[1] == str(year):
+            try:
+                seq = int(parts[2])
+                if seq > max_seq:
+                    max_seq = seq
+            except ValueError:
+                pass
+    next_seq = max_seq + 1
     
     for tk in wh_tickets:
-        tk_id = str(tk.get('id') or '').strip()
+        tk_id = str(tk.get('id_ticket') or '').strip()
         if not tk_id:
             continue
             
@@ -331,8 +351,11 @@ def run_sync(dry_run=False, incremental=False):
         if tk_status not in ('Nuevo', 'En Proceso'):
             continue
             
-        # First, retrieve the client WispHub ID
-        wh_client_id = str(tk.get('id_cliente') or '').strip()
+        # First, retrieve the client WispHub ID and username/service name
+        serv_obj = tk.get('servicio') or {}
+        wh_client_id = str(serv_obj.get('id_servicio') or '').strip()
+        tk_user = str(serv_obj.get('servicio') or serv_obj.get('usuario') or '').strip().split('@')[0]
+        
         client_id_found = None
         
         # 1. Match by WispHub Client ID
@@ -341,8 +364,7 @@ def run_sync(dry_run=False, incremental=False):
             
         # 2. Match by username/service if it has the prefix
         if not client_id_found:
-            tk_user = str(tk.get('usuario_servicio') or '').strip().split('@')[0]
-            if PREFIX_PATTERN.match(tk_user):
+            if tk_user and PREFIX_PATTERN.match(tk_user):
                 tk_user_up = tk_user.upper()
                 if tk_user_up in erp_by_id:
                     client_id_found = erp_by_id[tk_user_up]['id_cliente']
@@ -366,9 +388,8 @@ def run_sync(dry_run=False, incremental=False):
             if not text:
                 return ""
             return re.sub(r'<[^>]*>', '', str(text))
-
+ 
         # Map ticket to OT fields
-        ot_id = f"WH-{tk_id}"
         ot_tipo = str(tk.get('categoria') or 'Soporte').strip()
         ot_desc = strip_html(f"{tk.get('asunto') or ''}\n\nDetalle:\n{tk.get('detalle') or ''}")
         
@@ -389,13 +410,14 @@ def run_sync(dry_run=False, incremental=False):
             
         ot_tecnico = str(tk.get('tecnico') or '').strip()
         
-        if ot_id in existing_ots:
+        if tk_id in existing_ots_by_wh:
             # Check for changes
-            existing_row = existing_ots[ot_id]
+            existing_row = existing_ots_by_wh[tk_id]
+            ot_id = existing_row[0]
             existing_estado = existing_row[2]
             
             if ot_estado != existing_estado:
-                print(f"[ACTION] UPDATE OT: OT {ot_id} state will be updated to {ot_estado}.")
+                print(f"[ACTION] UPDATE OT: OT {ot_id} (WispHub {tk_id}) state will be updated to {ot_estado}.")
                 stats_ot['updated'] += 1
                 if not dry_run:
                     cur.execute(
@@ -405,14 +427,16 @@ def run_sync(dry_run=False, incremental=False):
             else:
                 stats_ot['skipped'] += 1
         else:
-            # Create new OT
-            print(f"[ACTION] INSERT OT: OT {ot_id} for client {client_id_found} will be created.")
+            # Create new OT with standard ERP format: OT-YYYY-Seq
+            ot_id = f"OT-{year}-{next_seq}"
+            next_seq += 1
+            print(f"[ACTION] INSERT OT: OT {ot_id} (WispHub Ticket {tk_id}) for client {client_id_found} will be created.")
             stats_ot['inserted'] += 1
             if not dry_run:
                 cur.execute(
-                    """INSERT INTO public.ordenes_trabajo (id_ot, id_cliente, tecnico, tipo, estado, fecha_creacion, descripcion)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                    (ot_id, client_id_found, None, ot_tipo, ot_estado, ot_fecha_creacion, ot_desc)
+                    """INSERT INTO public.ordenes_trabajo (id_ot, id_cliente, tecnico, tipo, estado, fecha_creacion, descripcion, id_wisphub)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (ot_id, client_id_found, None, ot_tipo, ot_estado, ot_fecha_creacion, ot_desc, tk_id)
                 )
                 
     if not dry_run:
