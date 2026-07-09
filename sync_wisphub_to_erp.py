@@ -317,12 +317,12 @@ def run_sync(dry_run=False, incremental=False):
     stats_ot = {'inserted': 0, 'updated': 0, 'skipped': 0}
     
     # Fetch existing OTs and build memory indexes
-    cur.execute("SELECT id_ot, id_cliente, estado, id_wisphub, descripcion FROM public.ordenes_trabajo")
+    cur.execute("SELECT id_ot, id_cliente, estado, id_wisphub, descripcion, tipo FROM public.ordenes_trabajo")
     existing_ots_rows = cur.fetchall()
     
     existing_ots_by_wh = {}
     for r in existing_ots_rows:
-        ot_id, id_cli, est, id_wh, desc = r
+        ot_id, id_cli, est, id_wh, desc, tip = r
         if id_wh:
             existing_ots_by_wh[str(id_wh).strip()] = r
             
@@ -389,9 +389,42 @@ def run_sync(dry_run=False, incremental=False):
                 return ""
             return re.sub(r'<[^>]*>', '', str(text))
  
-        # Map ticket to OT fields
-        ot_tipo = str(tk.get('categoria') or 'Soporte').strip()
-        ot_desc = strip_html(f"{tk.get('asunto') or ''}\n\nDetalle:\n{tk.get('detalle') or ''}")
+        # Smart parse type and description from WispHub ticket
+        import html
+        import unicodedata
+        
+        asunto = tk.get('asunto') or ''
+        desc_html = tk.get('descripcion') or ''
+        
+        default_tipo = str(asunto or 'SOPORTE').strip().upper()
+        
+        # 1. Unescape HTML entities
+        plain_desc = html.unescape(str(desc_html))
+        # 2. Replace block tags with newlines
+        plain_desc = re.sub(r'</p>|</div>|<br\s*/?>', '\n', plain_desc, flags=re.IGNORECASE)
+        plain_desc = re.sub(r'<[^>]*>', '', plain_desc)
+        
+        # 3. Split by lines and clean
+        desc_lines = []
+        for line in plain_desc.split('\n'):
+            cleaned_line = line.strip()
+            if cleaned_line:
+                desc_lines.append(cleaned_line)
+                
+        # Helper to normalize strings for comparison
+        def clean_compare(text):
+            text_norm = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
+            return re.sub(r'[^a-z0-9]', '', text_norm.lower())
+            
+        asunto_clean = clean_compare(asunto)
+        first_line_clean = clean_compare(desc_lines[0]) if desc_lines else ""
+        
+        if len(desc_lines) >= 2 and (asunto_clean in first_line_clean or first_line_clean in asunto_clean):
+            ot_tipo = desc_lines[0].upper()
+            ot_desc = "\n".join(desc_lines[1:])
+        else:
+            ot_tipo = default_tipo
+            ot_desc = "\n".join(desc_lines) if desc_lines else ""
         
         # Map status: Nuevo/Asignado -> PENDIENTE, En Proceso -> EN_PROCESO, Resuelto/Cerrado -> CERRADA
         tk_status = str(tk.get('estado') or '').strip()
@@ -415,14 +448,19 @@ def run_sync(dry_run=False, incremental=False):
             existing_row = existing_ots_by_wh[tk_id]
             ot_id = existing_row[0]
             existing_estado = existing_row[2]
+            existing_desc = existing_row[4]
+            existing_tipo = existing_row[5]
             
-            if ot_estado != existing_estado:
-                print(f"[ACTION] UPDATE OT: OT {ot_id} (WispHub {tk_id}) state will be updated to {ot_estado}.")
+            if (ot_estado != existing_estado or 
+                ot_tipo != str(existing_tipo or '').strip().upper() or
+                ot_desc != str(existing_desc or '').strip()):
+                
+                print(f"[ACTION] UPDATE OT: OT {ot_id} (WispHub {tk_id}) will be updated (State: {existing_estado} -> {ot_estado}, Type: {existing_tipo} -> {ot_tipo}).")
                 stats_ot['updated'] += 1
                 if not dry_run:
                     cur.execute(
-                        "UPDATE public.ordenes_trabajo SET estado = %s, updated_at = CURRENT_TIMESTAMP WHERE id_ot = %s",
-                        (ot_estado, ot_id)
+                        "UPDATE public.ordenes_trabajo SET estado = %s, tipo = %s, descripcion = %s, updated_at = CURRENT_TIMESTAMP WHERE id_ot = %s",
+                        (ot_estado, ot_tipo, ot_desc, ot_id)
                     )
             else:
                 stats_ot['skipped'] += 1
