@@ -309,7 +309,7 @@ def run_sync(dry_run=False, incremental=False):
                 }
                 erp_by_id[client_id_val.upper()] = new_client_dict
                 erp_by_wisphub[wh_id_wisphub] = new_client_dict
-
+ 
                 
     # 5. Sync Tickets (OTs)
     wh_tickets = fetch_wisphub_tickets(api_url, api_key, incremental=incremental)
@@ -434,12 +434,17 @@ def run_sync(dry_run=False, incremental=False):
         elif tk_status in ("Resuelto", "Cerrado"):
             ot_estado = "CERRADA"
             
-        # Standardize date format to "YYYY-MM-DD HH:MM:SS"
+        # Standardize date format to "YYYY-MM-DD"
         raw_date = tk.get('fecha_creacion')
-        if raw_date and 'T' in raw_date:
-            ot_fecha_creacion = raw_date.replace('T', ' ').split('-')[0].split('+')[0][:19]
+        if raw_date:
+            if 'T' in raw_date:
+                ot_fecha_creacion = raw_date.split('T')[0]
+            elif ' ' in raw_date:
+                ot_fecha_creacion = raw_date.split(' ')[0]
+            else:
+                ot_fecha_creacion = raw_date[:10]
         else:
-            ot_fecha_creacion = raw_date or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ot_fecha_creacion = datetime.now().strftime('%Y-%m-%d')
             
         ot_tecnico = str(tk.get('tecnico') or '').strip()
         
