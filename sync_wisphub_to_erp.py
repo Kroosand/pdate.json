@@ -64,10 +64,10 @@ def fetch_wisphub_clients(api_url, api_key, incremental=False):
     
     clients = []
     # If incremental, we only request clients updated today
-    url = f"{api_url}clientes/?limit=100"
+    url = f"{api_url}clientes/?limit=300"
     if incremental:
         today_str = datetime.now().strftime('%Y-%m-%d')
-        url = f"{api_url}clientes/?limit=100&ultimo_cambio={today_str}"
+        url = f"{api_url}clientes/?limit=300&ultimo_cambio={today_str}"
         print(f"[INFO] Running incremental sync for today ({today_str})...")
     else:
         print("[INFO] Running complete sync for all clients...")
@@ -94,10 +94,10 @@ def fetch_wisphub_tickets(api_url, api_key, incremental=False):
     }
     
     tickets = []
-    url = f"{api_url}tickets/?limit=100"
+    url = f"{api_url}tickets/?limit=300"
     if incremental:
         # Fetch tickets and filter locally
-        url = f"{api_url}tickets/?limit=100"
+        url = f"{api_url}tickets/?limit=300"
         print("[INFO] Fetching tickets...")
     else:
         print("[INFO] Fetching all tickets...")
@@ -309,7 +309,7 @@ def run_sync(dry_run=False, incremental=False):
                 }
                 erp_by_id[client_id_val.upper()] = new_client_dict
                 erp_by_wisphub[wh_id_wisphub] = new_client_dict
- 
+
                 
     # 5. Sync Tickets (OTs)
     wh_tickets = fetch_wisphub_tickets(api_url, api_key, incremental=incremental)
