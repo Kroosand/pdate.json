@@ -470,9 +470,8 @@ def run_sync(dry_run=False, incremental=False):
             else:
                 stats_ot['skipped'] += 1
         else:
-            # Create new OT with standard ERP format: OT-YYYY-Seq
-            ot_id = f"OT-{year}-{next_seq}"
-            next_seq += 1
+            # Create new OT with unique WispHub format: OT-WH-{tk_id}
+            ot_id = f"OT-WH-{tk_id}"
             print(f"[ACTION] INSERT OT: OT {ot_id} (WispHub Ticket {tk_id}) for client {client_id_found} will be created.")
             stats_ot['inserted'] += 1
             if not dry_run:
