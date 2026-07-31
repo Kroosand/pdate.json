@@ -199,7 +199,8 @@ def run_sync(dry_run=False, incremental=False):
         'skipped_inactive': 0
     }
     
-    # Batch lists for high-performance database execution
+    # Keep track of matched ERP client IDs and batch updates
+    matched_erp_ids = set()
     client_updates = []
     client_inserts = []
 
@@ -271,25 +272,7 @@ def run_sync(dry_run=False, incremental=False):
             else:
                 stats['skipped_inactive'] += 1
 
-    # Execute client updates and inserts in batch for high performance
-    if not dry_run:
-        if client_updates:
-            print(f"[BATCH UPDATE] Updating {len(client_updates)} clients in DB...")
-            cur.executemany(
-                """UPDATE public.clientes 
-                   SET nombre = %s, telefono = %s, direccion = %s, plan = %s, dni_ruc = %s, id_wisphub = %s, estado = %s, lat = %s, lng = %s, updated_at = CURRENT_TIMESTAMP
-                   WHERE id_cliente = %s""",
-                client_updates
-            )
-        if client_inserts:
-            print(f"[BATCH INSERT] Importing {len(client_inserts)} new active clients into DB...")
-            cur.executemany(
-                """INSERT INTO public.clientes (id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub, lat, lng)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                client_inserts
-            )
-                
-        # Update memory maps for subsequent ticket sync
+        # Update memory maps inside the loop for subsequent ticket sync
         if wh_id_wisphub:
             if erp_cli:
                 # Update existing client dict in place to preserve all other fields (like 'estado')
@@ -315,6 +298,24 @@ def run_sync(dry_run=False, incremental=False):
                 }
                 erp_by_id[client_id_val.upper()] = new_client_dict
                 erp_by_wisphub[wh_id_wisphub] = new_client_dict
+
+    # Execute client updates and inserts in batch for high performance
+    if not dry_run:
+        if client_updates:
+            print(f"[BATCH UPDATE] Updating {len(client_updates)} clients in DB...")
+            cur.executemany(
+                """UPDATE public.clientes 
+                   SET nombre = %s, telefono = %s, direccion = %s, plan = %s, dni_ruc = %s, id_wisphub = %s, estado = %s, lat = %s, lng = %s, updated_at = CURRENT_TIMESTAMP
+                   WHERE id_cliente = %s""",
+                client_updates
+            )
+        if client_inserts:
+            print(f"[BATCH INSERT] Importing {len(client_inserts)} new active clients into DB...")
+            cur.executemany(
+                """INSERT INTO public.clientes (id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub, lat, lng)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                client_inserts
+            )
 
                 
     # 5. Sync Tickets (OTs)
