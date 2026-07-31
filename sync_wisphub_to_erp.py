@@ -199,9 +199,10 @@ def run_sync(dry_run=False, incremental=False):
         'skipped_inactive': 0
     }
     
-    # Keep track of matched ERP client IDs
-    matched_erp_ids = set()
-    
+    # Batch lists for high-performance database execution
+    client_updates = []
+    client_inserts = []
+
     # 4. Sync Clients
     for wh in wh_clients:
         wh_serv = str(wh.get('servicio') or '').strip()
@@ -259,29 +260,34 @@ def run_sync(dry_run=False, incremental=False):
                 not floats_close(wh_lng, erp_cli.get('lng'))
             )
             if has_changes:
-                print(f"[ACTION] UPDATE: Client {erp_cli['id_cliente']} ({wh_nombre}) information will be updated.")
                 stats['updated'] += 1
-                if not dry_run:
-                    cur.execute(
-                        """UPDATE public.clientes 
-                           SET nombre = %s, telefono = %s, direccion = %s, plan = %s, dni_ruc = %s, id_wisphub = %s, estado = %s, lat = %s, lng = %s, updated_at = CURRENT_TIMESTAMP
-                           WHERE id_cliente = %s""",
-                        (wh_nombre, wh_telefono, wh_direccion, wh_plan, wh_dni, wh_id_wisphub, target_estado, wh_lat, wh_lng, erp_cli['id_cliente'])
-                    )
+                client_updates.append((wh_nombre, wh_telefono, wh_direccion, wh_plan, wh_dni, wh_id_wisphub, target_estado, wh_lat, wh_lng, erp_cli['id_cliente']))
         else:
             # Client does not exist -> Insert if active in WispHub
             if wh_estado.upper() == 'ACTIVO':
                 new_id = wh_serv if PREFIX_PATTERN.match(wh_serv) else wh_user
-                print(f"[ACTION] INSERT: Client {new_id} ({wh_nombre}) will be imported into ERP.")
                 stats['inserted'] += 1
-                if not dry_run:
-                    cur.execute(
-                        """INSERT INTO public.clientes (id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub, lat, lng)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                        (new_id, wh_nombre, wh_telefono, wh_direccion, target_estado, wh_plan, wh_dni, wh_id_wisphub, wh_lat, wh_lng)
-                    )
+                client_inserts.append((new_id, wh_nombre, wh_telefono, wh_direccion, target_estado, wh_plan, wh_dni, wh_id_wisphub, wh_lat, wh_lng))
             else:
                 stats['skipped_inactive'] += 1
+
+    # Execute client updates and inserts in batch for high performance
+    if not dry_run:
+        if client_updates:
+            print(f"[BATCH UPDATE] Updating {len(client_updates)} clients in DB...")
+            cur.executemany(
+                """UPDATE public.clientes 
+                   SET nombre = %s, telefono = %s, direccion = %s, plan = %s, dni_ruc = %s, id_wisphub = %s, estado = %s, lat = %s, lng = %s, updated_at = CURRENT_TIMESTAMP
+                   WHERE id_cliente = %s""",
+                client_updates
+            )
+        if client_inserts:
+            print(f"[BATCH INSERT] Importing {len(client_inserts)} new active clients into DB...")
+            cur.executemany(
+                """INSERT INTO public.clientes (id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub, lat, lng)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                client_inserts
+            )
                 
         # Update memory maps for subsequent ticket sync
         if wh_id_wisphub:
@@ -452,10 +458,16 @@ def run_sync(dry_run=False, incremental=False):
             # Check for changes
             existing_row = existing_ots_by_wh[tk_id]
             ot_id = existing_row[0]
-            existing_estado = existing_row[2]
+            existing_estado = str(existing_row[2] or '').strip().upper()
             existing_desc = existing_row[4]
             existing_tipo = existing_row[5]
             
+            # TERMINAL STATE GUARD: If the OT in ERP MegaCable is already CANCELADO, CERRADO, or CERRADA,
+            # NEVER allow WispHub sync to revert it back to PENDIENTE or EN_PROCESO!
+            if existing_estado in ('CANCELADO', 'CERRADO', 'CERRADA'):
+                stats_ot['skipped'] += 1
+                continue
+
             if (ot_estado != existing_estado or 
                 ot_tipo != str(existing_tipo or '').strip().upper() or
                 ot_desc != str(existing_desc or '').strip()):
