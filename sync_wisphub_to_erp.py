@@ -5,7 +5,6 @@ import requests
 import json
 import time
 from datetime import datetime
-
 import os
 
 # Reconfigure stdout to UTF-8 to prevent encoding errors on Windows terminal
@@ -63,7 +62,6 @@ def fetch_wisphub_clients(api_url, api_key, incremental=False):
     }
     
     clients = []
-    # If incremental, we only request clients updated today
     url = f"{api_url}clientes/?limit=300"
     if incremental:
         today_str = datetime.now().strftime('%Y-%m-%d')
@@ -82,7 +80,7 @@ def fetch_wisphub_clients(api_url, api_key, incremental=False):
         clients.extend(data.get('results', []))
         url = data.get('next')
         if url:
-            time.sleep(1.0) # Safe delay between requests
+            time.sleep(1.0)
             
     print(f"Fetched {len(clients)} clients from WispHub.")
     return clients
@@ -96,7 +94,6 @@ def fetch_wisphub_tickets(api_url, api_key, incremental=False):
     tickets = []
     url = f"{api_url}tickets/?limit=300"
     if incremental:
-        # Fetch tickets and filter locally
         url = f"{api_url}tickets/?limit=300"
         print("[INFO] Fetching tickets...")
     else:
@@ -112,7 +109,7 @@ def fetch_wisphub_tickets(api_url, api_key, incremental=False):
         tickets.extend(data.get('results', []))
         url = data.get('next')
         if url:
-            time.sleep(1.0) # Safe delay
+            time.sleep(1.0)
             
     print(f"Fetched {len(tickets)} tickets from WispHub.")
     return tickets
@@ -162,14 +159,17 @@ def run_sync(dry_run=False, incremental=False):
         conn.close()
         return
         
-    # 2. Fetch all ERP clients
+    # 2. Fetch all ERP clients with network columns
     cur = conn.cursor()
-    cur.execute("SELECT id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub, lat, lng FROM public.clientes")
+    cur.execute("""
+        SELECT id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub, lat, lng,
+               ip_cliente, usuario_red, nombre_router, zona, interfaz_lan, mac_cpe, sn_onu, dia_corte, estado_facturas
+        FROM public.clientes
+    """)
     erp_clients_rows = cur.fetchall()
     desc_cli = [d[0] for d in cur.description]
     erp_clients = [dict(zip(desc_cli, r)) for r in erp_clients_rows]
     
-    # Filter ERP clients to keep prefix alfanumeric (ONU/ONT/ONS) and EXCLUDE purely numeric ones
     erp_by_id = {}
     erp_by_wisphub = {}
     excluded_numeric_count = 0
@@ -190,7 +190,6 @@ def run_sync(dry_run=False, incremental=False):
     # 3. Fetch WispHub Clients
     wh_clients = fetch_wisphub_clients(api_url, api_key, incremental=incremental)
     
-    # Track stats
     stats = {
         'inserted': 0,
         'updated': 0,
@@ -199,23 +198,20 @@ def run_sync(dry_run=False, incremental=False):
         'skipped_inactive': 0
     }
     
-    # Keep track of matched ERP client IDs and batch updates
     matched_erp_ids = set()
     client_updates = []
     client_inserts = []
 
-    # 4. Sync Clients
+    # 4. Sync Clients with MikroTik / Network fields
     for wh in wh_clients:
         wh_serv = str(wh.get('servicio') or '').strip()
         wh_user = str(wh.get('usuario') or '').strip().split('@')[0]
         
-        # Check if the service matches the prefix pattern
         is_prefix_match = PREFIX_PATTERN.match(wh_serv) or PREFIX_PATTERN.match(wh_user)
         if not is_prefix_match:
             stats['skipped_numeric'] += 1
             continue
             
-        # Determine the unique ID to match
         matched_id = None
         erp_cli = None
         wh_serv_up = wh_serv.upper()
@@ -243,46 +239,82 @@ def run_sync(dry_run=False, incremental=False):
         
         target_estado = map_estado(wh_estado)
         
+        # Network / MikroTik Fields
+        wh_ip = str(wh.get('ip') or '').strip()
+        wh_mac = str(wh.get('mac_cpe') or '').strip().upper()
+        wh_user_red = str(wh.get('usuario') or '').strip()
+        
+        router_obj = wh.get('router') or {}
+        wh_router = str(router_obj.get('nombre') if isinstance(router_obj, dict) else (router_obj or '')).strip()
+        
+        zona_obj = wh.get('zona') or {}
+        wh_zona = str(zona_obj.get('nombre') if isinstance(zona_obj, dict) else (zona_obj or '')).strip()
+        
+        wh_interfaz = str(wh.get('interfaz_lan') or '').strip()
+        wh_sn_onu = str(wh.get('sn_onu') or '').strip()
+        wh_est_fac = str(wh.get('estado_facturas') or '').strip()
+        
+        wh_dia_corte = None
+        fc = str(wh.get('fecha_corte') or '').strip()
+        if fc:
+            try:
+                wh_dia_corte = int(fc.split('/')[0])
+            except Exception:
+                pass
+        
         if erp_cli:
-            # Client exists -> Check if updates are needed
             matched_erp_ids.add(matched_id)
-            erp_estado = str(erp_cli['estado'] or '').strip().upper()
+            erp_estado = str(erp_cli.get('estado') or '').strip().upper()
             
-            # Compare fields to avoid redundant updates
             has_changes = (
-                wh_nombre != str(erp_cli['nombre'] or '').strip() or
-                wh_telefono != str(erp_cli['telefono'] or '').strip() or
-                wh_direccion != str(erp_cli['direccion'] or '').strip() or
-                wh_plan != str(erp_cli['plan'] or '').strip() or
-                wh_dni != str(erp_cli['dni_ruc'] or '').strip() or
-                wh_id_wisphub != str(erp_cli['id_wisphub'] or '').strip() or
+                wh_nombre != str(erp_cli.get('nombre') or '').strip() or
+                wh_telefono != str(erp_cli.get('telefono') or '').strip() or
+                wh_direccion != str(erp_cli.get('direccion') or '').strip() or
+                wh_plan != str(erp_cli.get('plan') or '').strip() or
+                wh_dni != str(erp_cli.get('dni_ruc') or '').strip() or
+                wh_id_wisphub != str(erp_cli.get('id_wisphub') or '').strip() or
                 target_estado != erp_estado or
+                wh_ip != str(erp_cli.get('ip_cliente') or '').strip() or
+                wh_mac != str(erp_cli.get('mac_cpe') or '').strip() or
+                wh_user_red != str(erp_cli.get('usuario_red') or '').strip() or
+                wh_router != str(erp_cli.get('nombre_router') or '').strip() or
+                wh_zona != str(erp_cli.get('zona') or '').strip() or
+                wh_interfaz != str(erp_cli.get('interfaz_lan') or '').strip() or
+                wh_sn_onu != str(erp_cli.get('sn_onu') or '').strip() or
+                wh_dia_corte != erp_cli.get('dia_corte') or
+                wh_est_fac != str(erp_cli.get('estado_facturas') or '').strip() or
                 not floats_close(wh_lat, erp_cli.get('lat')) or
                 not floats_close(wh_lng, erp_cli.get('lng'))
             )
             if has_changes:
                 stats['updated'] += 1
-                client_updates.append((wh_nombre, wh_telefono, wh_direccion, wh_plan, wh_dni, wh_id_wisphub, target_estado, wh_lat, wh_lng, erp_cli['id_cliente']))
+                client_updates.append((
+                    wh_nombre, wh_telefono, wh_direccion, wh_plan, wh_dni, wh_id_wisphub, target_estado,
+                    wh_lat, wh_lng, wh_ip, wh_mac, wh_user_red, wh_router,
+                    wh_zona, wh_interfaz, wh_sn_onu, wh_dia_corte, wh_est_fac,
+                    erp_cli['id_cliente']
+                ))
         else:
-            # Client does not exist -> Insert if active in WispHub
             if wh_estado.upper() == 'ACTIVO':
                 new_id = wh_serv if PREFIX_PATTERN.match(wh_serv) else wh_user
                 stats['inserted'] += 1
-                client_inserts.append((new_id, wh_nombre, wh_telefono, wh_direccion, target_estado, wh_plan, wh_dni, wh_id_wisphub, wh_lat, wh_lng))
+                client_inserts.append((
+                    new_id, wh_nombre, wh_telefono, wh_direccion, target_estado, wh_plan, wh_dni, wh_id_wisphub,
+                    wh_lat, wh_lng, wh_ip, wh_mac, wh_user_red, wh_router,
+                    wh_zona, wh_interfaz, wh_sn_onu, wh_dia_corte, wh_est_fac
+                ))
             else:
                 stats['skipped_inactive'] += 1
 
-        # Update memory maps inside the loop for subsequent ticket sync
         if wh_id_wisphub:
             if erp_cli:
-                # Update existing client dict in place to preserve all other fields (like 'estado')
                 erp_cli['id_wisphub'] = wh_id_wisphub
                 erp_cli['nombre'] = wh_nombre
                 erp_cli['lat'] = wh_lat
                 erp_cli['lng'] = wh_lng
+                erp_cli['ip_cliente'] = wh_ip
                 erp_by_wisphub[wh_id_wisphub] = erp_cli
             elif wh_estado.upper() == 'ACTIVO':
-                # Create a new full dict for the newly inserted active client
                 client_id_val = wh_serv if PREFIX_PATTERN.match(wh_serv) else wh_user
                 new_client_dict = {
                     'id_cliente': client_id_val,
@@ -294,36 +326,48 @@ def run_sync(dry_run=False, incremental=False):
                     'plan': wh_plan,
                     'dni_ruc': wh_dni,
                     'lat': wh_lat,
-                    'lng': wh_lng
+                    'lng': wh_lng,
+                    'ip_cliente': wh_ip,
+                    'mac_cpe': wh_mac,
+                    'usuario_red': wh_user_red,
+                    'nombre_router': wh_router,
+                    'zona': wh_zona,
+                    'interfaz_lan': wh_interfaz,
+                    'sn_onu': wh_sn_onu,
+                    'dia_corte': wh_dia_corte,
+                    'estado_facturas': wh_est_fac
                 }
                 erp_by_id[client_id_val.upper()] = new_client_dict
                 erp_by_wisphub[wh_id_wisphub] = new_client_dict
 
-    # Execute client updates and inserts in batch for high performance
     if not dry_run:
         if client_updates:
-            print(f"[BATCH UPDATE] Updating {len(client_updates)} clients in DB...")
+            print(f"[BATCH UPDATE] Updating {len(client_updates)} clients in DB with IP & Network info...")
             cur.executemany(
                 """UPDATE public.clientes 
-                   SET nombre = %s, telefono = %s, direccion = %s, plan = %s, dni_ruc = %s, id_wisphub = %s, estado = %s, lat = %s, lng = %s, updated_at = CURRENT_TIMESTAMP
+                   SET nombre = %s, telefono = %s, direccion = %s, plan = %s, dni_ruc = %s, id_wisphub = %s, estado = %s,
+                       lat = %s, lng = %s, ip_cliente = %s, mac_cpe = %s, usuario_red = %s, nombre_router = %s,
+                       zona = %s, interfaz_lan = %s, sn_onu = %s, dia_corte = %s, estado_facturas = %s,
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE id_cliente = %s""",
                 client_updates
             )
         if client_inserts:
             print(f"[BATCH INSERT] Importing {len(client_inserts)} new active clients into DB...")
             cur.executemany(
-                """INSERT INTO public.clientes (id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub, lat, lng)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                """INSERT INTO public.clientes (
+                       id_cliente, nombre, telefono, direccion, estado, plan, dni_ruc, id_wisphub,
+                       lat, lng, ip_cliente, mac_cpe, usuario_red, nombre_router,
+                       zona, interfaz_lan, sn_onu, dia_corte, estado_facturas
+                   ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 client_inserts
             )
 
-                
     # 5. Sync Tickets (OTs)
     wh_tickets = fetch_wisphub_tickets(api_url, api_key, incremental=incremental)
     
     stats_ot = {'inserted': 0, 'updated': 0, 'skipped': 0}
     
-    # Fetch existing OTs and build memory indexes
     cur.execute("SELECT id_ot, id_cliente, estado, id_wisphub, descripcion, tipo FROM public.ordenes_trabajo")
     existing_ots_rows = cur.fetchall()
     
@@ -333,50 +377,30 @@ def run_sync(dry_run=False, incremental=False):
         if id_wh:
             existing_ots_by_wh[str(id_wh).strip()] = r
             
-    # Calculate next sequence number for OT format: OT-YYYY-N
-    year = datetime.now().year
-    max_seq = 0
-    for r in existing_ots_rows:
-        ot_id = str(r[0])
-        parts = ot_id.split('-')
-        if len(parts) == 3 and parts[0] == 'OT' and parts[1] == str(year):
-            try:
-                seq = int(parts[2])
-                if seq > max_seq:
-                    max_seq = seq
-            except ValueError:
-                pass
-    next_seq = max_seq + 1
-    
     for tk in wh_tickets:
         tk_id = str(tk.get('id_ticket') or '').strip()
         if not tk_id:
             continue
             
-        # Only process open tickets (Nuevo or En Proceso) from WispHub
         tk_status = str(tk.get('estado') or '').strip()
         if tk_status not in ('Nuevo', 'En Proceso'):
             continue
             
-        # First, retrieve the client WispHub ID and username/service name
         serv_obj = tk.get('servicio') or {}
         wh_client_id = str(serv_obj.get('id_servicio') or '').strip()
         tk_user = str(serv_obj.get('servicio') or serv_obj.get('usuario') or '').strip().split('@')[0]
         
         client_id_found = None
         
-        # 1. Match by WispHub Client ID
         if wh_client_id and wh_client_id in erp_by_wisphub:
             client_id_found = erp_by_wisphub[wh_client_id]['id_cliente']
             
-        # 2. Match by username/service if it has the prefix
         if not client_id_found:
             if tk_user and PREFIX_PATTERN.match(tk_user):
                 tk_user_up = tk_user.upper()
                 if tk_user_up in erp_by_id:
                     client_id_found = erp_by_id[tk_user_up]['id_cliente']
                     
-        # 3. Match by description/subject search for prefix
         if not client_id_found:
             desc_text = str(tk.get('asunto') or '') + " " + str(tk.get('detalle') or '')
             prefix_match = PREFIX_PATTERN.search(desc_text)
@@ -385,18 +409,10 @@ def run_sync(dry_run=False, incremental=False):
                 if candidate_id in erp_by_id:
                     client_id_found = erp_by_id[candidate_id]['id_cliente']
                     
-        # Skip tickets of numeric or non-prefix clients
         if not client_id_found:
             stats_ot['skipped'] += 1
             continue
             
-        # Helper function to strip HTML tags
-        def strip_html(text):
-            if not text:
-                return ""
-            return re.sub(r'<[^>]*>', '', str(text))
- 
-        # Smart parse type and description from WispHub ticket
         import html
         import unicodedata
         
@@ -405,20 +421,16 @@ def run_sync(dry_run=False, incremental=False):
         
         default_tipo = str(asunto or 'SOPORTE').strip().upper()
         
-        # 1. Unescape HTML entities
         plain_desc = html.unescape(str(desc_html))
-        # 2. Replace block tags with newlines
         plain_desc = re.sub(r'</p>|</div>|<br\s*/?>', '\n', plain_desc, flags=re.IGNORECASE)
         plain_desc = re.sub(r'<[^>]*>', '', plain_desc)
         
-        # 3. Split by lines and clean
         desc_lines = []
         for line in plain_desc.split('\n'):
             cleaned_line = line.strip()
             if cleaned_line:
                 desc_lines.append(cleaned_line)
                 
-        # Helper to normalize strings for comparison
         def clean_compare(text):
             text_norm = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
             return re.sub(r'[^a-z0-9]', '', text_norm.lower())
@@ -433,7 +445,6 @@ def run_sync(dry_run=False, incremental=False):
             ot_tipo = default_tipo
             ot_desc = "\n".join(desc_lines) if desc_lines else ""
         
-        # Map status: Nuevo/Asignado -> PENDIENTE, En Proceso -> EN_PROCESO, Resuelto/Cerrado -> CERRADA
         tk_status = str(tk.get('estado') or '').strip()
         ot_estado = "PENDIENTE"
         if tk_status == "En Proceso":
@@ -441,7 +452,6 @@ def run_sync(dry_run=False, incremental=False):
         elif tk_status in ("Resuelto", "Cerrado"):
             ot_estado = "CERRADA"
             
-        # Standardize date format to "YYYY-MM-DD"
         raw_date = tk.get('fecha_creacion')
         if raw_date:
             if 'T' in raw_date:
@@ -453,18 +463,13 @@ def run_sync(dry_run=False, incremental=False):
         else:
             ot_fecha_creacion = datetime.now().strftime('%Y-%m-%d')
             
-        ot_tecnico = str(tk.get('tecnico') or '').strip()
-        
         if tk_id in existing_ots_by_wh:
-            # Check for changes
             existing_row = existing_ots_by_wh[tk_id]
             ot_id = existing_row[0]
             existing_estado = str(existing_row[2] or '').strip().upper()
             existing_desc = existing_row[4]
             existing_tipo = existing_row[5]
             
-            # TERMINAL STATE GUARD: If the OT in ERP MegaCable is already CANCELADO, CERRADO, or CERRADA,
-            # NEVER allow WispHub sync to revert it back to PENDIENTE or EN_PROCESO!
             if existing_estado in ('CANCELADO', 'CERRADO', 'CERRADA'):
                 stats_ot['skipped'] += 1
                 continue
@@ -483,7 +488,6 @@ def run_sync(dry_run=False, incremental=False):
             else:
                 stats_ot['skipped'] += 1
         else:
-            # Create new OT with unique WispHub format: OT-WH-{tk_id}
             ot_id = f"OT-WH-{tk_id}"
             print(f"[ACTION] INSERT OT: OT {ot_id} (WispHub Ticket {tk_id}) for client {client_id_found} will be created.")
             stats_ot['inserted'] += 1
