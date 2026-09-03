@@ -1,5 +1,9 @@
 {
-  "version": 93.3,
-  "url": "https://github.com/Kroosand/pdate.json/releases/download/v93.3/MegaCable_ERP_Flutter_Setup_93.3.exe",
-  "hash_sha256": "3ec2c9db3f5104591570bbea956d83ae638357c90eae78cc5e970ae725c138ac"
+  "version": "94.0",
+  "url": "https://github.com/Kroosand/pdate.json/releases/download/v94.0/MegaCable_ERP_Flutter_Setup_94.0.exe",
+  "sha256": "3ddfdbcba34712a6d922766ad52b913229ee237422a132a24210040070f12a8d",
+  "hash_sha256": "3ddfdbcba34712a6d922766ad52b913229ee237422a132a24210040070f12a8d",
+  "signature": "fd51845f6e3c977a77a5fbe704df3c9b4a58404fda223a5649fd7a444fde95f58b51188f1e04ab3ff01a3585600d42a90875e8dec80494acbf27e64001da7503",
+  "date": "2026-09-03",
+  "description": "MegaCable ERP v94.0 - Remediación de Seguridad, Concurrencia y Optimización"
 }
