@@ -3,7 +3,7 @@
   "url": "https://github.com/Kroosand/pdate.json/releases/download/v94.1/MegaCable_ERP_Flutter_Setup_94.1.exe",
   "sha256": "e129046b0813116ef5f64282cd8156da81886b96891ce2325238372304525b0e",
   "hash_sha256": "e129046b0813116ef5f64282cd8156da81886b96891ce2325238372304525b0e",
-  "signature": "fd51845f6e3c977a77a5fbe704df3c9b4a58404fda223a5649fd7a444fde95f58b51188f1e04ab3ff01a3585600d42a90875e8dec80494acbf27e64001da7503",
+  "signature": "e3749a2fd4ce48aac7b3cec682d5526925d9c4762d2a7225f80aa07d2e671d3fb6ac6034cc8ab9457c8e22b071524ca0a96ae4b1699bbc9fdde4aab89efd2b00",
   "date": "2026-09-21",
-  "description": "MegaCable ERP v94.0 - Correcion de Errores"
+  "description": "MegaCable ERP v94.1 - Soporte de ID Cliente y Seriales Cortos en Importacion"
 }
